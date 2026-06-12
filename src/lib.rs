@@ -333,8 +333,6 @@ impl CharacterLook {
 #[reflect(Component)]
 pub struct CharacterControllerState {
     pub orientation: Quat,
-    /// One-shot velocity change applied during the next character controller step.
-    pub impulse: Vec3,
     /// The velocity of the platform that the character is standing on (or has recently jumped off
     /// of).
     pub platform_velocity: Vec3,
@@ -361,7 +359,6 @@ impl Default for CharacterControllerState {
             platform_velocity: Vec3::ZERO,
             platform_angular_velocity: Vec3::ZERO,
             orientation: Quat::IDENTITY,
-            impulse: Vec3::ZERO,
             grounded: None,
             crouching: false,
             tac_velocity: 0.0,

@@ -281,8 +281,6 @@ fn step_kcc(
     ctx.state.last_tac.tick(time.delta());
     ctx.state.last_step_up.tick(time.delta());
     ctx.state.last_step_down.tick(time.delta());
-    ctx.velocity.0 += ctx.state.impulse;
-    ctx.state.impulse = Vec3::ZERO;
 
     depenetrate_character(move_and_slide, &mut ctx, &mut transform);
     update_grounded(move_and_slide, colliders, time, &mut ctx, &mut transform);
