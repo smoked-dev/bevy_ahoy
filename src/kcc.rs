@@ -4,13 +4,16 @@ use avian3d::{
 };
 use bevy_ecs::{
     intern::Interned,
-    query::QueryData,
+    query::{QueryData, QueryEntityError},
     relationship::RelationshipSourceCollection,
     schedule::ScheduleLabel,
-    system::lifetimeless::{Read, Write},
+    system::{
+        SystemParam,
+        lifetimeless::{Read, Write},
+    },
 };
 use bevy_math::Affine3A;
-use core::fmt::Debug;
+use core::fmt::{self, Debug};
 use core::time::Duration;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -153,6 +156,79 @@ struct RigidBodyComponents {
     friction: Option<Read<Friction>>,
 }
 
+/// System parameter for manually stepping one character controller at a time.
+///
+/// This is intended for workflows such as netcode prediction/rollback where one consumed user
+/// command should correspond to one KCC movement step for exactly one entity.
+#[derive(SystemParam)]
+pub struct CharacterControllerStepper<'w, 's> {
+    kccs: Query<'w, 's, Ctx>,
+    move_and_slide: MoveAndSlide<'w, 's>,
+    // TODO: allow this to be other KCCs
+    colliders: Query<'w, 's, ColliderComponents, (Without<CharacterController>, Without<Sensor>)>,
+    rigid_bodies: Query<'w, 's, RigidBodyComponents>,
+    waters: Query<'w, 's, Entity, With<Water>>,
+    default_friction: Res<'w, DefaultFriction>,
+    physics_transforms: Query<'w, 's, (&'static Position, &'static Rotation)>,
+}
+
+impl CharacterControllerStepper<'_, '_> {
+    /// Step `entity` through one Ahoy KCC movement update using `fixed_delta`.
+    pub fn step_entity(
+        &mut self,
+        entity: Entity,
+        fixed_delta: Duration,
+    ) -> Result<(), CharacterControllerStepError> {
+        let mut time = Time::default();
+        time.advance_by(fixed_delta);
+
+        let ctx = self
+            .kccs
+            .get_mut(entity)
+            .map_err(CharacterControllerStepError::MissingCharacterController)?;
+
+        let mut colliders = self.colliders.transmute_lens::<ColliderComponents>();
+        let colliders = colliders.query();
+        let mut waters = self.waters.transmute_lens::<Entity>();
+        let waters = waters.query();
+
+        step_kcc(
+            ctx,
+            &time,
+            &self.move_and_slide,
+            &colliders,
+            &self.rigid_bodies,
+            &waters,
+            &self.default_friction,
+            &self.physics_transforms,
+        )
+    }
+}
+
+/// Error returned when [`CharacterControllerStepper::step_entity`] could not run a KCC step.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CharacterControllerStepError {
+    MissingCharacterController(QueryEntityError),
+    MissingColliderTransform { entity: Entity },
+}
+
+impl fmt::Display for CharacterControllerStepError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingCharacterController(err) => {
+                write!(f, "failed to query character controller: {err}")
+            }
+            Self::MissingColliderTransform { entity } => write!(
+                f,
+                "character controller {entity:?} does not have a valid collider transform"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CharacterControllerStepError {}
+
 fn run_kcc(
     mut kccs: Query<Ctx>,
     time: Res<Time>,
@@ -168,151 +244,170 @@ fn run_kcc(
     let colliders = colliders.query();
     let mut waters = waters.transmute_lens_inner();
     let waters = waters.query();
-    for mut ctx in &mut kccs {
-        let Some(mut transform) = ctx.collider_global_transform(&physics_transforms) else {
-            error!("Cannot update KCC: The collider is in a corrupt state. Skipping.");
-            continue;
-        };
-        let original_transform = transform;
-
-        ctx.output.mantle = None;
-        ctx.output.touching_entities.clear();
-        ctx.state.last_ground.tick(time.delta());
-        ctx.state.last_tac.tick(time.delta());
-        ctx.state.last_step_up.tick(time.delta());
-        ctx.state.last_step_down.tick(time.delta());
-
-        depenetrate_character(&move_and_slide, &mut ctx, &mut transform);
-        update_grounded(&move_and_slide, &colliders, &time, &mut ctx, &mut transform);
-
-        handle_crouching(&move_and_slide, &waters, &mut ctx, &mut transform);
-
-        if ctx.water.level <= WaterLevel::Feet {
-            // here we'd handle things like spectator, dead, noclip, etc.
-            start_gravity(&time, &mut ctx);
+    for ctx in &mut kccs {
+        if let Err(err) = step_kcc(
+            ctx,
+            &time,
+            &move_and_slide,
+            &colliders,
+            &rigid_bodies,
+            &waters,
+            &default_friction,
+            &physics_transforms,
+        ) {
+            error!("Cannot update KCC: {err}. Skipping.");
         }
+    }
+}
 
-        ctx.state.orientation = ctx
-            .look
-            .map(CharacterLook::to_quat)
-            .unwrap_or(transform.rotation);
+fn step_kcc(
+    mut ctx: CtxItem,
+    time: &Time,
+    move_and_slide: &MoveAndSlide,
+    colliders: &Query<ColliderComponents>,
+    rigid_bodies: &Query<RigidBodyComponents>,
+    waters: &Query<Entity>,
+    default_friction: &DefaultFriction,
+    physics_transforms: &Query<(&Position, &Rotation)>,
+) -> Result<(), CharacterControllerStepError> {
+    let Some(mut transform) = ctx.collider_global_transform(physics_transforms) else {
+        return Err(CharacterControllerStepError::MissingColliderTransform { entity: ctx.entity });
+    };
+    let original_transform = transform;
 
-        let wish_velocity = calculate_wish_velocity(&ctx);
-        let wish_velocity_3d = calculate_3d_wish_velocity(&ctx);
-        update_crane_state(
+    ctx.output.mantle = None;
+    ctx.output.touching_entities.clear();
+    ctx.state.last_ground.tick(time.delta());
+    ctx.state.last_tac.tick(time.delta());
+    ctx.state.last_step_up.tick(time.delta());
+    ctx.state.last_step_down.tick(time.delta());
+
+    depenetrate_character(move_and_slide, &mut ctx, &mut transform);
+    update_grounded(move_and_slide, colliders, time, &mut ctx, &mut transform);
+
+    handle_crouching(move_and_slide, waters, &mut ctx, &mut transform);
+
+    if ctx.water.level <= WaterLevel::Feet {
+        // here we'd handle things like spectator, dead, noclip, etc.
+        start_gravity(time, &mut ctx);
+    }
+
+    ctx.state.orientation = ctx
+        .look
+        .map(CharacterLook::to_quat)
+        .unwrap_or(transform.rotation);
+
+    let wish_velocity = calculate_wish_velocity(&ctx);
+    let wish_velocity_3d = calculate_3d_wish_velocity(&ctx);
+    update_crane_state(
+        wish_velocity,
+        time,
+        move_and_slide,
+        &mut ctx,
+        &mut transform,
+    );
+    update_mantle_state(
+        wish_velocity,
+        time,
+        move_and_slide,
+        &mut ctx,
+        &mut transform,
+    );
+    if ctx.state.crane_height_left.is_some() {
+        handle_crane_movement(
             wish_velocity,
-            &time,
-            &move_and_slide,
+            time,
+            move_and_slide,
             &mut ctx,
             &mut transform,
         );
-        update_mantle_state(
+    } else if ctx.state.mantle.is_some() {
+        handle_jump(
             wish_velocity,
-            &time,
-            &move_and_slide,
+            time,
+            colliders,
+            move_and_slide,
             &mut ctx,
             &mut transform,
         );
-        if ctx.state.crane_height_left.is_some() {
-            handle_crane_movement(
-                wish_velocity,
-                &time,
-                &move_and_slide,
-                &mut ctx,
-                &mut transform,
-            );
-        } else if ctx.state.mantle.is_some() {
-            handle_jump(
-                wish_velocity,
-                &time,
-                &colliders,
-                &move_and_slide,
-                &mut ctx,
-                &mut transform,
-            );
-            handle_mantle_movement(
+        handle_mantle_movement(
+            wish_velocity_3d,
+            time,
+            move_and_slide,
+            colliders,
+            &mut ctx,
+            &mut transform,
+        );
+    } else {
+        handle_jump(
+            wish_velocity,
+            time,
+            colliders,
+            move_and_slide,
+            &mut ctx,
+            &mut transform,
+        );
+
+        // Friction is handled before we add in any base velocity. That way, if we are on a conveyor,
+        //  we don't slow when standing still, relative to the conveyor.
+        friction(time, colliders, rigid_bodies, default_friction, &mut ctx);
+
+        validate_velocity(&mut ctx);
+
+        if ctx.water.level > WaterLevel::Feet {
+            water_move(
                 wish_velocity_3d,
-                &time,
-                &move_and_slide,
-                &colliders,
+                time,
+                move_and_slide,
+                &mut ctx,
+                &mut transform,
+            );
+        } else if ctx.state.grounded.is_some() {
+            ground_move(
+                wish_velocity,
+                time,
+                move_and_slide,
                 &mut ctx,
                 &mut transform,
             );
         } else {
-            handle_jump(
+            air_move(
                 wish_velocity,
-                &time,
-                &colliders,
-                &move_and_slide,
-                &mut ctx,
-                &mut transform,
-            );
-
-            // Friction is handled before we add in any base velocity. That way, if we are on a conveyor,
-            //  we don't slow when standing still, relative to the conveyor.
-            friction(
-                &time,
-                &colliders,
-                &rigid_bodies,
-                &default_friction,
-                &mut ctx,
-            );
-
-            validate_velocity(&mut ctx);
-
-            if ctx.water.level > WaterLevel::Feet {
-                water_move(
-                    wish_velocity_3d,
-                    &time,
-                    &move_and_slide,
-                    &mut ctx,
-                    &mut transform,
-                );
-            } else if ctx.state.grounded.is_some() {
-                ground_move(
-                    wish_velocity,
-                    &time,
-                    &move_and_slide,
-                    &mut ctx,
-                    &mut transform,
-                );
-            } else {
-                air_move(
-                    wish_velocity,
-                    &time,
-                    &move_and_slide,
-                    &mut ctx,
-                    &mut transform,
-                );
-            }
-        }
-
-        let was_grounded = ctx.state.grounded.is_some();
-        update_grounded(&move_and_slide, &colliders, &time, &mut ctx, &mut transform);
-        if was_grounded {
-            handle_climbdown(
-                wish_velocity,
-                &move_and_slide,
-                &time,
+                time,
+                move_and_slide,
                 &mut ctx,
                 &mut transform,
             );
         }
-        validate_velocity(&mut ctx);
-
-        if ctx.water.level <= WaterLevel::Feet {
-            finish_gravity(&time, &mut ctx);
-        }
-
-        if ctx.state.grounded.is_some() {
-            ctx.velocity.y = ctx.state.platform_velocity.y;
-            ctx.state.last_ground.reset();
-        }
-        // TODO: check_falling();
-
-        let movement = original_transform.compute_affine().inverse() * transform.compute_affine();
-        *ctx.transform = affine_to_transform(ctx.transform.compute_affine() * movement);
     }
+
+    let was_grounded = ctx.state.grounded.is_some();
+    update_grounded(move_and_slide, colliders, time, &mut ctx, &mut transform);
+    if was_grounded {
+        handle_climbdown(
+            wish_velocity,
+            move_and_slide,
+            time,
+            &mut ctx,
+            &mut transform,
+        );
+    }
+    validate_velocity(&mut ctx);
+
+    if ctx.water.level <= WaterLevel::Feet {
+        finish_gravity(time, &mut ctx);
+    }
+
+    if ctx.state.grounded.is_some() {
+        ctx.velocity.y = ctx.state.platform_velocity.y;
+        ctx.state.last_ground.reset();
+    }
+    // TODO: check_falling();
+
+    let movement = original_transform.compute_affine().inverse() * transform.compute_affine();
+    *ctx.transform = affine_to_transform(ctx.transform.compute_affine() * movement);
+
+    Ok(())
 }
 
 fn affine_to_transform(affine: Affine3A) -> Transform {

@@ -22,6 +22,7 @@ pub mod prelude {
             Climbdown, Crane, Crouch, GlobalMovement, Jump, Mantle, Movement, RotateCamera, SwimUp,
             Tac, YankCamera,
         },
+        kcc::CharacterControllerStepper,
         water::{Water, WaterLevel, WaterState},
     };
 
@@ -48,8 +49,11 @@ pub use avian_pickup::{
 };
 
 pub use crate::{
-    camera::AhoyCameraPlugin, dynamics::AhoyDynamicPlugin,
-    fixed_update_utils::AhoyFixedUpdateUtilsPlugin, input::AhoyInputPlugin, kcc::AhoyKccPlugin,
+    camera::AhoyCameraPlugin,
+    dynamics::AhoyDynamicPlugin,
+    fixed_update_utils::AhoyFixedUpdateUtilsPlugin,
+    input::AhoyInputPlugin,
+    kcc::{AhoyKccPlugin, CharacterControllerStepError, CharacterControllerStepper},
     water::AhoyWaterPlugin,
 };
 use crate::{input::AccumulatedInput, prelude::*};
