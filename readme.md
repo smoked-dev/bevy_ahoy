@@ -104,6 +104,38 @@ fn spawn_player(mut commands: Commands) {
 }
 ```
 
+### Manual KCC stepping
+
+By default, Ahoy runs every [`CharacterController`] once per fixed update. For prediction,
+rollback, or custom movement ordering, disable the automatic mover and run selected entities
+yourself:
+
+```rust
+use bevy::prelude::*;
+use bevy_ahoy::prelude::*;
+
+fn setup_app(app: &mut App) {
+    app.add_plugins(AhoyPlugins::manual())
+        .add_systems(
+            FixedPostUpdate,
+            run_manual_kcc.in_set(AhoySystems::MoveCharacters),
+        );
+}
+
+fn run_manual_kcc(
+    time: Res<Time>,
+    controllers: Query<Entity, With<CharacterController>>,
+    mut stepper: CharacterControllerStepper,
+) {
+    for controller in &controllers {
+        stepper.run_kcc(controller, time.delta());
+    }
+}
+```
+
+Keeping the manual system in [`AhoySystems::MoveCharacters`] preserves Ahoy's normal ordering, so
+systems such as dynamic-body force application still run after character movement.
+
 ## Inspiration
 
 - The underlying move-and-slide uses Avian's implementation, the inspirations for which are [listed in the implementing PR](https://github.com/avianphysics/avian/pull/894).

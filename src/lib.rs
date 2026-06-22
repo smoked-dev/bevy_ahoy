@@ -53,7 +53,7 @@ pub use crate::{
     dynamics::AhoyDynamicPlugin,
     fixed_update_utils::AhoyFixedUpdateUtilsPlugin,
     input::AhoyInputPlugin,
-    kcc::{AhoyKccPlugin, CharacterControllerStepError, CharacterControllerStepper},
+    kcc::{AhoyKccPlugin, CharacterControllerStepper},
     water::AhoyWaterPlugin,
 };
 use crate::{input::AccumulatedInput, prelude::*};
@@ -79,6 +79,7 @@ mod water;
 /// Also adds [`AvianPickupPlugin`] if `pickup` feature is enabled.
 pub struct AhoyPlugins {
     schedule: Interned<dyn ScheduleLabel>,
+    manual_kcc: bool,
 }
 
 impl AhoyPlugins {
@@ -86,6 +87,16 @@ impl AhoyPlugins {
     pub fn new(schedule: impl ScheduleLabel) -> Self {
         Self {
             schedule: schedule.intern(),
+            manual_kcc: false,
+        }
+    }
+
+    /// Create a plugin group that sets up KCCs, but leaves movement to
+    /// [`CharacterControllerStepper`].
+    pub fn manual() -> Self {
+        Self {
+            schedule: FixedPostUpdate.intern(),
+            manual_kcc: true,
         }
     }
 }
@@ -94,6 +105,7 @@ impl Default for AhoyPlugins {
     fn default() -> Self {
         Self {
             schedule: FixedPostUpdate.intern(),
+            manual_kcc: false,
         }
     }
 }
@@ -105,10 +117,17 @@ impl PluginGroup for AhoyPlugins {
                 schedule: self.schedule,
             })
             .add(AhoyCameraPlugin)
-            .add(AhoyInputPlugin)
-            .add(AhoyKccPlugin {
+            .add(AhoyInputPlugin);
+
+        let plugin = if self.manual_kcc {
+            plugin.add(kcc::AhoyManualKccPlugin)
+        } else {
+            plugin.add(AhoyKccPlugin {
                 schedule: self.schedule,
             })
+        };
+
+        let plugin = plugin
             .add(AhoyWaterPlugin)
             .add(AhoyFixedUpdateUtilsPlugin)
             .add(AhoyDynamicPlugin {

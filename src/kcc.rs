@@ -4,7 +4,7 @@ use avian3d::{
 };
 use bevy_ecs::{
     intern::Interned,
-    query::{QueryData, QueryEntityError},
+    query::QueryData,
     relationship::RelationshipSourceCollection,
     schedule::ScheduleLabel,
     system::{
@@ -13,7 +13,7 @@ use bevy_ecs::{
     },
 };
 use bevy_math::Affine3A;
-use core::fmt::{self, Debug};
+use core::fmt::Debug;
 use core::time::Duration;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -29,8 +29,22 @@ pub struct AhoyKccPlugin {
 
 impl Plugin for AhoyKccPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(self.schedule, run_kcc.in_set(AhoySystems::MoveCharacters))
-            .add_systems(Update, (spin_character_look,))
+        app.add_systems(Update, (spin_character_look,))
+            .add_systems(PreUpdate, setup_collider)
+            .add_systems(self.schedule, run_kcc.in_set(AhoySystems::MoveCharacters));
+    }
+}
+
+/// Plugin for manual KCC stepping.
+///
+/// This installs the supporting KCC systems, but deliberately does not schedule the automatic
+/// all-characters movement system. Use [`CharacterControllerStepper`] from your own system to run
+/// selected entities.
+pub(crate) struct AhoyManualKccPlugin;
+
+impl Plugin for AhoyManualKccPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, (spin_character_look,))
             .add_systems(PreUpdate, setup_collider);
     }
 }
@@ -173,19 +187,22 @@ pub struct CharacterControllerStepper<'w, 's> {
 }
 
 impl CharacterControllerStepper<'_, '_> {
-    /// Step `entity` through one Ahoy KCC movement update using `fixed_delta`.
-    pub fn step_entity(
-        &mut self,
-        entity: Entity,
-        fixed_delta: Duration,
-    ) -> Result<(), CharacterControllerStepError> {
+    /// Run one Ahoy KCC movement update for `entity` using `fixed_delta`.
+    ///
+    /// This is the per-entity equivalent of Ahoy's automatic KCC system. It is useful for
+    /// prediction, rollback, AI-controlled subsets, or any other workflow where the caller owns the
+    /// movement order.
+    pub fn run_kcc(&mut self, entity: Entity, fixed_delta: Duration) {
         let mut time = Time::default();
         time.advance_by(fixed_delta);
 
-        let ctx = self
-            .kccs
-            .get_mut(entity)
-            .map_err(CharacterControllerStepError::MissingCharacterController)?;
+        let ctx = match self.kccs.get_mut(entity) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                error!("Cannot update KCC for {entity:?}: {err}. Skipping.");
+                return;
+            }
+        };
 
         let mut colliders = self.colliders.transmute_lens::<ColliderComponents>();
         let colliders = colliders.query();
@@ -201,33 +218,16 @@ impl CharacterControllerStepper<'_, '_> {
             &waters,
             &self.default_friction,
             &self.physics_transforms,
-        )
+        );
+    }
+
+    /// Step `entity` through one Ahoy KCC movement update using `fixed_delta`.
+    ///
+    /// This is kept as a compatibility alias for [`Self::run_kcc`].
+    pub fn step_entity(&mut self, entity: Entity, fixed_delta: Duration) {
+        self.run_kcc(entity, fixed_delta)
     }
 }
-
-/// Error returned when [`CharacterControllerStepper::step_entity`] could not run a KCC step.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum CharacterControllerStepError {
-    MissingCharacterController(QueryEntityError),
-    MissingColliderTransform { entity: Entity },
-}
-
-impl fmt::Display for CharacterControllerStepError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingCharacterController(err) => {
-                write!(f, "failed to query character controller: {err}")
-            }
-            Self::MissingColliderTransform { entity } => write!(
-                f,
-                "character controller {entity:?} does not have a valid collider transform"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CharacterControllerStepError {}
 
 fn run_kcc(
     mut kccs: Query<Ctx>,
@@ -245,7 +245,7 @@ fn run_kcc(
     let mut waters = waters.transmute_lens_inner();
     let waters = waters.query();
     for ctx in &mut kccs {
-        if let Err(err) = step_kcc(
+        step_kcc(
             ctx,
             &time,
             &move_and_slide,
@@ -254,9 +254,7 @@ fn run_kcc(
             &waters,
             &default_friction,
             &physics_transforms,
-        ) {
-            error!("Cannot update KCC: {err}. Skipping.");
-        }
+        );
     }
 }
 
@@ -269,9 +267,13 @@ fn step_kcc(
     waters: &Query<Entity>,
     default_friction: &DefaultFriction,
     physics_transforms: &Query<(&Position, &Rotation)>,
-) -> Result<(), CharacterControllerStepError> {
+) {
     let Some(mut transform) = ctx.collider_global_transform(physics_transforms) else {
-        return Err(CharacterControllerStepError::MissingColliderTransform { entity: ctx.entity });
+        error!(
+            "Cannot update KCC for {:?}: missing collider transform. Skipping.",
+            ctx.entity
+        );
+        return;
     };
     let original_transform = transform;
 
@@ -406,8 +408,6 @@ fn step_kcc(
 
     let movement = original_transform.compute_affine().inverse() * transform.compute_affine();
     *ctx.transform = affine_to_transform(ctx.transform.compute_affine() * movement);
-
-    Ok(())
 }
 
 fn affine_to_transform(affine: Affine3A) -> Transform {
