@@ -59,7 +59,7 @@ pub use crate::{
 use crate::{input::AccumulatedInput, prelude::*};
 use avian3d::character_controller::move_and_slide::MoveHitData;
 use bevy_app::PluginGroupBuilder;
-use bevy_ecs::{entity::MapEntities, intern::Interned, schedule::ScheduleLabel};
+use bevy_ecs::{intern::Interned, schedule::ScheduleLabel};
 use bevy_time::Stopwatch;
 use core::time::Duration;
 
@@ -306,7 +306,7 @@ impl Default for CharacterController {
 /// The look direction for the character.
 ///
 /// Usually, this is populated by the camera.
-#[derive(Component, Clone, Reflect, PartialEq, Debug, Default, MapEntities)]
+#[derive(Component, Clone, Reflect, PartialEq, Debug, Default)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serialize", reflect(Serialize, Deserialize))]
 #[reflect(Component)]
