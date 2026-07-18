@@ -16,7 +16,7 @@ use bevy_math::Affine3A;
 use core::fmt::Debug;
 use core::time::Duration;
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     CharacterControllerDerivedProps, CharacterControllerOutput, CharacterControllerState,
@@ -523,7 +523,7 @@ fn air_move(
 fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &mut CtxItem) {
     // Q3 PM_Accelerate "proper way (avoids strafe jump maxspeed bug)":
     // push velocity directly toward wish_velocity instead of projecting on wish_dir.
-    let Ok((_, wish_speed)) = Dir3::new_and_length(wish_velocity) else {
+    let Ok((wish_dir, wish_speed)) = Dir3::new_and_length(wish_velocity) else {
         return;
     };
     // Push in the horizontal plane only, or it drags vertical velocity toward
@@ -541,15 +541,15 @@ fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &
     let old_speed = old_h.length();
     let mut new_h = old_h + can_push * *push_dir;
 
-    // Carve: steering is a free redirect (no speed lost turning), and turning
-    // pays a bonus proportional to radians turned this frame. Pushing against
-    // your motion still brakes normally.
-    let braking = wish_velocity.dot(old_h) < 0.0;
-    if !braking && old_speed > 1e-3 {
+    // Carve: air speed is never lost, only re-aimed. Gain pays per radian
+    // turned, scaled by coherence (wishdir aligned with your arc) so
+    // keyboard-circling redirects but doesn't tornado-pump.
+    if old_speed > 1e-3 {
         let turn = old_h.angle_between(new_h);
+        let coherence = wish_dir.dot(old_h / old_speed).max(0.0);
         let mut target = old_speed;
         if old_speed < ctx.cfg.max_carve_speed {
-            target *= 1.0 + ctx.cfg.carve_gain * turn;
+            target *= 1.0 + ctx.cfg.carve_gain * turn * coherence;
         }
         new_h = new_h.normalize_or_zero() * f32::max(new_h.length(), target);
     }
@@ -877,6 +877,7 @@ fn update_crane_state(
 
     ctx.state.mantle = None;
     ctx.state.crane_height_left = Some(crane_height);
+    info!(entity = ?ctx.entity, "Crane");
 }
 
 fn available_crane_height(
@@ -1044,6 +1045,7 @@ fn update_mantle_state(
 
     ctx.state.mantle = Some(mantle_state);
     ctx.output.mantle = Some(mantle_output);
+    info!(entity = ?ctx.entity, "Mantle");
 }
 
 fn available_mantle_height(
@@ -1581,6 +1583,7 @@ fn handle_bounce(move_and_slide: &MoveAndSlide, ctx: &mut CtxItem, transform: &m
     };
     ctx.input.bounced = None;
     ctx.state.last_bounce.reset();
+    info!(entity = ?ctx.entity, "Bounce");
     // Elastic bounce: mirror the velocity component going into the wall across its plane —
     // deliberately independent of movement keys and look direction. Current velocity may
     // already have been projected along the wall by move-and-slide (e.g. while strafing
@@ -1636,8 +1639,10 @@ fn handle_jump(
     let jumpdir =
         if ctx.state.grounded.is_none() && ctx.state.last_ground.elapsed() > ctx.cfg.coyote_time {
             if let Some(tac_dir) = handle_tac(wish_velocity, time, move_and_slide, ctx, transform) {
+                info!(entity = ?ctx.entity, "Tic tac");
                 tac_dir
             } else if let Some(ledge_jump_dir) = handle_ledge_jump_dir(ctx) {
+                info!(entity = ?ctx.entity, "Ledge jump");
                 ledge_jump_dir
             } else {
                 return;
@@ -1663,6 +1668,7 @@ fn handle_jump(
                     ctx.velocity.z *= scale;
                 }
             }
+            info!(entity = ?ctx.entity, "Jump");
             Vec3::Y
         };
     ctx.state.last_tac.reset();
@@ -1758,6 +1764,7 @@ fn update_sliding(ctx: &mut CtxItem) {
     if ctx.state.sliding {
         if !ctx.state.crouching || speed < ctx.cfg.slide_end_speed {
             ctx.state.sliding = false;
+            info!(entity = ?ctx.entity, "Slide end");
         }
     } else if ctx.state.crouching
         && ctx.state.grounded.is_some()
@@ -1766,6 +1773,7 @@ fn update_sliding(ctx: &mut CtxItem) {
     {
         ctx.state.sliding = true;
         ctx.state.last_slide.reset();
+        info!(entity = ?ctx.entity, "Slide start");
         // Boost fades to zero as entry speed approaches slide_boost_max_speed, so high
         // momentum slides carry their own speed instead of stacking boosts.
         let boost = ctx.cfg.slide_boost * (1.0 - speed / ctx.cfg.slide_boost_max_speed).max(0.0);
