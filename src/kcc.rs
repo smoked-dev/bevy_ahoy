@@ -280,6 +280,9 @@ fn step_kcc(
     ctx.output.mantle = None;
     ctx.output.touching_entities.clear();
     ctx.state.last_ground.tick(time.delta());
+    ctx.state.last_land.tick(time.delta());
+    ctx.state.last_slide.tick(time.delta());
+    ctx.state.last_bounce.tick(time.delta());
     ctx.state.last_tac.tick(time.delta());
     ctx.state.last_step_up.tick(time.delta());
     ctx.state.last_step_down.tick(time.delta());
@@ -288,6 +291,7 @@ fn step_kcc(
     update_grounded(move_and_slide, colliders, time, &mut ctx, &mut transform);
 
     handle_crouching(move_and_slide, waters, &mut ctx, &mut transform);
+    update_sliding(&mut ctx);
 
     if ctx.water.level <= WaterLevel::Feet {
         // here we'd handle things like spectator, dead, noclip, etc.
@@ -349,6 +353,7 @@ fn step_kcc(
             &mut ctx,
             &mut transform,
         );
+        handle_bounce(move_and_slide, &mut ctx, &mut transform);
 
         // Friction is handled before we add in any base velocity. That way, if we are on a conveyor,
         //  we don't slow when standing still, relative to the conveyor.
@@ -445,6 +450,16 @@ fn ground_move(
     ground_accelerate(wish_velocity, ctx.cfg.acceleration_hz, time, ctx);
     ctx.velocity.y = 0.0;
 
+    // While sliding, gravity projected onto the ground plane pulls us downhill, so slopes
+    // maintain (or build) momentum while flat ground slowly bleeds it via friction.
+    if ctx.state.sliding && let Some(grounded) = ctx.state.grounded {
+        let normal = grounded.normal1;
+        let gravity = Vec3::NEG_Y * ctx.cfg.gravity;
+        let downhill = gravity - normal * gravity.dot(normal);
+        ctx.velocity.x += downhill.x * time.delta_secs();
+        ctx.velocity.z += downhill.z * time.delta_secs();
+    }
+
     ctx.velocity.0 += ctx.state.platform_velocity;
     let speed = ctx.velocity.length();
 
@@ -506,22 +521,23 @@ fn air_move(
 }
 
 fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &mut CtxItem) {
-    let Ok((wish_dir, wish_speed)) = Dir3::new_and_length(wish_velocity) else {
+    // Q3 PM_Accelerate "proper way (avoids strafe jump maxspeed bug)":
+    // push velocity directly toward wish_velocity instead of projecting on wish_dir.
+    let Ok((_, wish_speed)) = Dir3::new_and_length(wish_velocity) else {
         return;
     };
-    let wishspd = f32::min(wish_speed, ctx.cfg.max_air_wish_speed);
-    let current_speed = ctx.velocity.dot(*wish_dir);
-
-    let add_speed = wishspd - current_speed;
-
-    if add_speed <= 0.0 {
+    // Push in the horizontal plane only, or it drags vertical velocity toward
+    // zero (killing jumps and cancelling gravity).
+    let Ok((push_dir, push_len)) =
+        Dir3::new_and_length((wish_velocity - ctx.velocity.0).with_y(0.0))
+    else {
         return;
-    }
+    };
 
-    let accel_speed = wish_speed * acceleration_hz * time.delta_secs();
-    let accel_speed = f32::min(accel_speed, add_speed);
+    let can_push = wish_speed * acceleration_hz * time.delta_secs();
+    let can_push = f32::min(can_push, push_len);
 
-    ctx.velocity.0 += accel_speed * wish_dir;
+    ctx.velocity.0 += can_push * push_dir;
 }
 
 fn water_move(
@@ -1209,6 +1225,7 @@ fn move_character(
             MoveAndSlideHitResponse::Accept
         },
     );
+    ctx.state.last_velocity = ctx.velocity.0;
     let lost_velocity = (ctx.velocity.0 - out.projected_velocity).length();
     ctx.state.tac_velocity = ctx.state.tac_velocity * 0.99 + lost_velocity;
     transform.translation = out.position;
@@ -1371,6 +1388,12 @@ fn set_grounded(
         calculate_platform_movement(new_ground.point1, &platform, time, ctx, transform);
     }
 
+    // Landed: remember the speed we came in with so a quick jump can restore it.
+    if old_ground.is_none() && new_ground.is_some() {
+        ctx.state.land_speed = ctx.velocity.xz().length();
+        ctx.state.last_land.reset();
+    }
+
     ctx.state.grounded = new_ground;
     if ctx.state.grounded.is_some() {
         ctx.state.mantle = None;
@@ -1454,7 +1477,12 @@ fn friction(
             // use the air friction if not grounded
             .unwrap_or(&ctx.cfg.air_friction).dynamic_coefficient;
 
-    let friction = ctx.cfg.friction_hz * surface_friction;
+    let friction_hz = if ctx.state.sliding {
+        ctx.cfg.slide_friction_hz
+    } else {
+        ctx.cfg.friction_hz
+    };
+    let friction = friction_hz * surface_friction;
     let control = f32::max(speed, ctx.cfg.stop_speed);
     drop += control * friction * time.delta_secs();
 
@@ -1520,6 +1548,44 @@ fn handle_tac(
     Some(tac_dir * groundedness * ctx.cfg.tac_power)
 }
 
+fn handle_bounce(move_and_slide: &MoveAndSlide, ctx: &mut CtxItem, transform: &mut Transform) {
+    let Some(bounce_time) = ctx.input.bounced.clone() else {
+        return;
+    };
+    if bounce_time.elapsed() > ctx.cfg.bounce_input_buffer {
+        return;
+    }
+    if ctx.state.last_bounce.elapsed() < ctx.cfg.bounce_cooldown {
+        return;
+    }
+    let Some((_point, normal)) =
+        closest_wall_normal(ctx.cfg.bounce_distance, move_and_slide, ctx, transform)
+    else {
+        return;
+    };
+    ctx.input.bounced = None;
+    ctx.state.last_bounce.reset();
+    // Elastic bounce: mirror the velocity component going into the wall across its plane —
+    // deliberately independent of movement keys and look direction. Current velocity may
+    // already have been projected along the wall by move-and-slide (e.g. while strafing
+    // against it), so also consider the pre-projection velocity of the last move, and
+    // guarantee at least `bounce_min_speed` off the wall.
+    let into_wall = ctx
+        .velocity
+        .dot(*normal)
+        .min(ctx.state.last_velocity.dot(*normal));
+    let out = f32::max(
+        -ctx.cfg.bounce_restitution * into_wall,
+        ctx.cfg.bounce_min_speed,
+    );
+    if out > into_wall {
+        ctx.velocity.0 += (out - into_wall) * *normal;
+    }
+    // Vertical pop: a bounce also launches you up like a jump (never slows an ascent).
+    let jump_speed = (2.0 * ctx.cfg.gravity * ctx.cfg.jump_height).sqrt();
+    ctx.velocity.y = ctx.velocity.y.max(jump_speed * ctx.cfg.bounce_jump_factor);
+}
+
 fn handle_ledge_jump_dir(ctx: &mut CtxItem) -> Option<Vec3> {
     if ctx.state.mantle.is_none()
         || ctx
@@ -1570,6 +1636,17 @@ fn handle_jump(
             set_grounded(None, colliders, time, ctx, transform);
             // set last_ground to coyote time to make it not jump again after jumping ungrounds us
             ctx.state.last_ground.set_elapsed(ctx.cfg.coyote_time);
+            // Jumping shortly after landing restores the horizontal speed that ground
+            // friction ate in the meantime.
+            if ctx.state.last_land.elapsed() < ctx.cfg.land_momentum_window {
+                let preserved = ctx.state.land_speed * ctx.cfg.land_momentum_preservation;
+                let speed = ctx.velocity.xz().length();
+                if speed > 0.01 && speed < preserved {
+                    let scale = preserved / speed;
+                    ctx.velocity.x *= scale;
+                    ctx.velocity.z *= scale;
+                }
+            }
             Vec3::Y
         };
     ctx.state.last_tac.reset();
@@ -1658,6 +1735,28 @@ fn calculate_3d_wish_velocity(ctx: &CtxItem) -> Vec3 {
         ctx.cfg.speed
     };
     wish_dir * speed
+}
+
+fn update_sliding(ctx: &mut CtxItem) {
+    let speed = ctx.velocity.xz().length();
+    if ctx.state.sliding {
+        if !ctx.state.crouching || speed < ctx.cfg.slide_end_speed {
+            ctx.state.sliding = false;
+        }
+    } else if ctx.state.crouching
+        && ctx.state.grounded.is_some()
+        && speed >= ctx.cfg.slide_min_speed
+        && ctx.state.last_slide.elapsed() >= ctx.cfg.slide_cooldown
+    {
+        ctx.state.sliding = true;
+        ctx.state.last_slide.reset();
+        // Boost fades to zero as entry speed approaches slide_boost_max_speed, so high
+        // momentum slides carry their own speed instead of stacking boosts.
+        let boost = ctx.cfg.slide_boost * (1.0 - speed / ctx.cfg.slide_boost_max_speed).max(0.0);
+        let scale = (speed + boost) / speed;
+        ctx.velocity.x *= scale;
+        ctx.velocity.z *= scale;
+    }
 }
 
 fn handle_crouching(

@@ -19,8 +19,8 @@ pub mod prelude {
         AhoyPlugins, AhoySystems, CharacterController, CharacterControllerState,
         camera::{CharacterControllerCamera, CharacterControllerCameraOf},
         input::{
-            Climbdown, Crane, Crouch, GlobalMovement, Jump, Mantle, Movement, RotateCamera, SwimUp,
-            Tac, YankCamera,
+            Bounce, Climbdown, Crane, Crouch, GlobalMovement, Jump, Mantle, Movement, RotateCamera,
+            SwimUp, Tac, YankCamera,
         },
         kcc::CharacterControllerStepper,
         water::{Water, WaterLevel, WaterState},
@@ -239,6 +239,34 @@ pub struct CharacterController {
     pub max_ledge_grab_distance: f32,
     pub climb_reverse_sin: f32,
     pub climb_sensitivity: f32,
+    /// How long after landing a jump still restores the horizontal speed you landed with.
+    pub land_momentum_window: Duration,
+    /// Fraction of landing speed restored when jumping within [`Self::land_momentum_window`].
+    pub land_momentum_preservation: f32,
+    /// Friction while crouch sliding. Should be much lower than [`Self::friction_hz`].
+    pub slide_friction_hz: f32,
+    /// Speed added when entering a slide, fading to zero at [`Self::slide_boost_max_speed`].
+    pub slide_boost: f32,
+    /// At or above this speed, entering a slide gives no boost.
+    pub slide_boost_max_speed: f32,
+    /// Minimum horizontal speed to start a slide when crouching.
+    pub slide_min_speed: f32,
+    /// The slide ends when horizontal speed drops below this.
+    pub slide_end_speed: f32,
+    /// Minimum time between slide boosts, to prevent crouch-spam.
+    pub slide_cooldown: Duration,
+    /// How elastically a bounce reflects the velocity going into the wall.
+    /// 1.0 mirrors it perfectly (10 in → 10 out), lower values dampen it.
+    pub bounce_restitution: f32,
+    /// Minimum speed away from the wall a bounce gives, even when pressed up against it
+    /// with no incoming velocity left to reflect.
+    pub bounce_min_speed: f32,
+    /// Vertical pop a bounce gives, as a fraction of regular jump velocity.
+    pub bounce_jump_factor: f32,
+    /// Maximum distance to a wall for a bounce to trigger.
+    pub bounce_distance: f32,
+    pub bounce_input_buffer: Duration,
+    pub bounce_cooldown: Duration,
 }
 
 impl Default for CharacterController {
@@ -299,6 +327,20 @@ impl Default for CharacterController {
             max_ledge_grab_distance: 0.3,
             climb_reverse_sin: 40.0_f32.to_radians().sin(),
             climb_sensitivity: 2.5,
+            land_momentum_window: Duration::from_millis(400),
+            land_momentum_preservation: 0.85,
+            slide_friction_hz: 1.5,
+            slide_boost: 3.0,
+            slide_boost_max_speed: 18.0,
+            slide_min_speed: 8.0,
+            slide_end_speed: 2.0,
+            slide_cooldown: Duration::from_millis(750),
+            bounce_restitution: 1.0,
+            bounce_min_speed: 8.0,
+            bounce_jump_factor: 1.0,
+            bounce_distance: 0.5,
+            bounce_input_buffer: Duration::from_millis(150),
+            bounce_cooldown: Duration::from_millis(300),
         }
     }
 }
@@ -360,8 +402,18 @@ pub struct CharacterControllerState {
     pub platform_angular_velocity: Vec3,
     pub grounded: Option<MoveHitData>,
     pub crouching: bool,
+    /// Whether the character is currently crouch sliding.
+    pub sliding: bool,
     pub tac_velocity: f32,
+    /// The horizontal speed the character had when it last landed.
+    pub land_speed: f32,
+    /// The velocity of the last move, before move-and-slide projected it against obstacles.
+    pub last_velocity: Vec3,
     pub last_ground: Stopwatch,
+    /// Time since the character last transitioned from airborne to grounded.
+    pub last_land: Stopwatch,
+    pub last_slide: Stopwatch,
+    pub last_bounce: Stopwatch,
     pub last_tac: Stopwatch,
     pub last_step_up: Stopwatch,
     pub last_step_down: Stopwatch,
@@ -380,8 +432,14 @@ impl Default for CharacterControllerState {
             orientation: Quat::IDENTITY,
             grounded: None,
             crouching: false,
+            sliding: false,
             tac_velocity: 0.0,
+            land_speed: 0.0,
+            last_velocity: Vec3::ZERO,
             last_ground: max_stopwatch(),
+            last_land: max_stopwatch(),
+            last_slide: max_stopwatch(),
+            last_bounce: max_stopwatch(),
             last_tac: max_stopwatch(),
             last_step_up: max_stopwatch(),
             last_step_down: max_stopwatch(),

@@ -14,6 +14,7 @@ impl Plugin for AhoyInputPlugin {
             .add_observer(apply_jump)
             .add_observer(apply_global_movement)
             .add_observer(apply_tac)
+            .add_observer(apply_bounce)
             .add_observer(apply_crouch)
             .add_observer(apply_swim_up)
             .add_observer(apply_crane)
@@ -53,6 +54,10 @@ pub struct SwimUp;
 #[derive(Debug, InputAction)]
 #[action_output(bool)]
 pub struct Tac;
+
+#[derive(Debug, InputAction)]
+#[action_output(bool)]
+pub struct Bounce;
 
 #[derive(Debug, InputAction)]
 #[action_output(bool)]
@@ -107,6 +112,8 @@ pub struct AccumulatedInput {
     pub swim_up: bool,
     // Time since the last tac input. Will be `None` once the tac was processed.
     pub tac: Option<Stopwatch>,
+    // Time since the last bounce input. Will be `None` once the bounce was processed.
+    pub bounced: Option<Stopwatch>,
     // Whether any frame since the last fixed update loop input a crouch
     pub crouched: bool,
     pub craned: Option<Stopwatch>,
@@ -152,6 +159,12 @@ fn apply_swim_up(swim_up: On<Fire<SwimUp>>, mut accumulated_inputs: Query<&mut A
 fn apply_tac(tac: On<Fire<Tac>>, mut accumulated_inputs: Query<&mut AccumulatedInput>) {
     if let Ok(mut accumulated_inputs) = accumulated_inputs.get_mut(tac.context) {
         accumulated_inputs.tac = Some(Stopwatch::new());
+    }
+}
+
+fn apply_bounce(bounce: On<Fire<Bounce>>, mut accumulated_inputs: Query<&mut AccumulatedInput>) {
+    if let Ok(mut accumulated_inputs) = accumulated_inputs.get_mut(bounce.context) {
+        accumulated_inputs.bounced = Some(Stopwatch::new());
     }
 }
 
@@ -240,6 +253,7 @@ fn clear_accumulated_input(mut accumulated_inputs: Query<&mut AccumulatedInput>)
             jumped: accumulated_input.jumped.clone(),
             swim_up: default(),
             tac: accumulated_input.tac.clone(),
+            bounced: accumulated_input.bounced.clone(),
             craned: accumulated_input.craned.clone(),
             mantled: accumulated_input.mantled.clone(),
             crouched: default(),
@@ -255,6 +269,9 @@ fn tick_timers(mut inputs: Query<&mut AccumulatedInput>, time: Res<Time>) {
         }
         if let Some(tac) = input.tac.as_mut() {
             tac.tick(time.delta());
+        }
+        if let Some(bounced) = input.bounced.as_mut() {
+            bounced.tick(time.delta());
         }
         if let Some(craned) = input.craned.as_mut() {
             craned.tick(time.delta());

@@ -180,6 +180,14 @@ impl PlayerInput {
                     ],
                 ),
                 (
+                    Action::<Bounce>::new(),
+                    Press::default(),
+                    bindings![
+                        KeyCode::KeyQ,
+                        GamepadButton::East,
+                    ],
+                ),
+                (
                     Action::<Mantle>::new(),
                     Hold::new(0.2),
                     bindings![
