@@ -218,6 +218,11 @@ pub struct CharacterController {
     pub ledge_jump_factor: f32,
     pub max_tac_cos: f32,
     pub max_air_wish_speed: f32,
+    /// Speed multiplier per radian turned while airborne. 0 = pure momentum
+    /// preservation, no gain from carving.
+    pub carve_gain: f32,
+    /// Above this horizontal speed, carving stops adding speed (still preserved).
+    pub max_carve_speed: f32,
     pub tac_cooldown: Duration,
     pub unground_speed: f32,
     pub coyote_time: Duration,
@@ -304,6 +309,8 @@ impl Default for CharacterController {
             tac_input_buffer: Duration::from_millis(150),
             max_tac_cos: 40.0_f32.to_radians().cos(),
             max_air_wish_speed: 0.76,
+            carve_gain: 0.25,
+            max_carve_speed: 30.0,
             tac_cooldown: Duration::from_millis(300),
             unground_speed: 10.0,
             step_down_detection_distance: 0.2,

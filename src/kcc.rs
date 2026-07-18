@@ -537,7 +537,23 @@ fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &
     let can_push = wish_speed * acceleration_hz * time.delta_secs();
     let can_push = f32::min(can_push, push_len);
 
-    ctx.velocity.0 += can_push * push_dir;
+    let old_h = ctx.velocity.0.with_y(0.0);
+    let old_speed = old_h.length();
+    let mut new_h = old_h + can_push * *push_dir;
+
+    // Carve: steering is a free redirect (no speed lost turning), and turning
+    // pays a bonus proportional to radians turned this frame. Pushing against
+    // your motion still brakes normally.
+    let braking = wish_velocity.dot(old_h) < 0.0;
+    if !braking && old_speed > 1e-3 {
+        let turn = old_h.angle_between(new_h);
+        let mut target = old_speed;
+        if old_speed < ctx.cfg.max_carve_speed {
+            target *= 1.0 + ctx.cfg.carve_gain * turn;
+        }
+        new_h = new_h.normalize_or_zero() * f32::max(new_h.length(), target);
+    }
+    ctx.velocity.0 = new_h.with_y(ctx.velocity.y);
 }
 
 fn water_move(
