@@ -421,6 +421,8 @@ pub struct CharacterControllerState {
     pub last_land: Stopwatch,
     pub last_slide: Stopwatch,
     pub last_bounce: Stopwatch,
+    /// Time since the last executed jump (ground, tac, or ledge jump).
+    pub last_jump: Stopwatch,
     pub last_tac: Stopwatch,
     pub last_step_up: Stopwatch,
     pub last_step_down: Stopwatch,
@@ -447,6 +449,7 @@ impl Default for CharacterControllerState {
             last_land: max_stopwatch(),
             last_slide: max_stopwatch(),
             last_bounce: max_stopwatch(),
+            last_jump: max_stopwatch(),
             last_tac: max_stopwatch(),
             last_step_up: max_stopwatch(),
             last_step_down: max_stopwatch(),

@@ -283,6 +283,7 @@ fn step_kcc(
     ctx.state.last_land.tick(time.delta());
     ctx.state.last_slide.tick(time.delta());
     ctx.state.last_bounce.tick(time.delta());
+    ctx.state.last_jump.tick(time.delta());
     ctx.state.last_tac.tick(time.delta());
     ctx.state.last_step_up.tick(time.delta());
     ctx.state.last_step_down.tick(time.delta());
@@ -526,32 +527,33 @@ fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &
     let Ok((wish_dir, wish_speed)) = Dir3::new_and_length(wish_velocity) else {
         return;
     };
+    let old_h = ctx.velocity.0.with_y(0.0);
+    let old_speed = old_h.length();
+
+    // Doom-style chord geometry: above wish_speed, the target sits on the
+    // circle of current speed in the input direction. Gentle turns complete
+    // the chord and are lossless; sharp turns land mid-chord and bleed speed.
+    let target_vel = *wish_dir * f32::max(wish_speed, old_speed);
+
     // Push in the horizontal plane only, or it drags vertical velocity toward
     // zero (killing jumps and cancelling gravity).
     let Ok((push_dir, push_len)) =
-        Dir3::new_and_length((wish_velocity - ctx.velocity.0).with_y(0.0))
+        Dir3::new_and_length((target_vel - ctx.velocity.0).with_y(0.0))
     else {
         return;
     };
-
     let can_push = wish_speed * acceleration_hz * time.delta_secs();
     let can_push = f32::min(can_push, push_len);
-
-    let old_h = ctx.velocity.0.with_y(0.0);
-    let old_speed = old_h.length();
     let mut new_h = old_h + can_push * *push_dir;
 
-    // Carve: air speed is never lost, only re-aimed. Gain pays per radian
-    // turned, scaled by coherence (wishdir aligned with your arc) so
-    // keyboard-circling redirects but doesn't tornado-pump.
-    if old_speed > 1e-3 {
+    // Carve gain: coherent smooth carves (wishdir aligned with your arc) pay
+    // per radian turned, on top of whatever the chord left. Only at/above
+    // wish_speed: below it, base acceleration refunds chord losses for free,
+    // which let keyboard-circling collect gain with no cost (tornado).
+    if old_speed + 1e-2 >= wish_speed && old_speed < ctx.cfg.max_carve_speed {
         let turn = old_h.angle_between(new_h);
         let coherence = wish_dir.dot(old_h / old_speed).max(0.0);
-        let mut target = old_speed;
-        if old_speed < ctx.cfg.max_carve_speed {
-            target *= 1.0 + ctx.cfg.carve_gain * turn * coherence;
-        }
-        new_h = new_h.normalize_or_zero() * f32::max(new_h.length(), target);
+        new_h *= 1.0 + ctx.cfg.carve_gain * turn * coherence;
     }
     ctx.velocity.0 = new_h.with_y(ctx.velocity.y);
 }
@@ -1672,6 +1674,7 @@ fn handle_jump(
             Vec3::Y
         };
     ctx.state.last_tac.reset();
+    ctx.state.last_jump.reset();
 
     ctx.input.jumped = None;
     ctx.input.tac = None;
