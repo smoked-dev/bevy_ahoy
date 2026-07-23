@@ -106,7 +106,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     PlayerInput,
     CharacterController {
         acceleration_hz: 10.0,
-        air_acceleration_hz: 150.0,
+        air_control: 900.0,
         speed: 6.0,
         gravity: 23.0,
         friction_hz: 4.0,

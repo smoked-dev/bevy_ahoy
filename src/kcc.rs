@@ -513,7 +513,7 @@ fn air_move(
     ctx: &mut CtxItem,
     transform: &mut Transform,
 ) {
-    air_accelerate(wish_velocity, ctx.cfg.air_acceleration_hz, time, ctx);
+    air_accelerate(wish_velocity, ctx.cfg.air_control, time, ctx);
     ctx.velocity.0 += ctx.state.platform_velocity;
 
     step_move(time, move_and_slide, ctx, transform);
@@ -521,7 +521,7 @@ fn air_move(
     ctx.velocity.0 -= ctx.state.platform_velocity;
 }
 
-fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &mut CtxItem) {
+fn air_accelerate(wish_velocity: Vec3, accel: f32, time: &Time, ctx: &mut CtxItem) {
     // Q3 PM_Accelerate "proper way (avoids strafe jump maxspeed bug)":
     // push velocity directly toward wish_velocity instead of projecting on wish_dir.
     let Ok((wish_dir, wish_speed)) = Dir3::new_and_length(wish_velocity) else {
@@ -542,8 +542,9 @@ fn air_accelerate(wish_velocity: Vec3, acceleration_hz: f32, time: &Time, ctx: &
     else {
         return;
     };
-    let can_push = wish_speed * acceleration_hz * time.delta_secs();
-    let can_push = f32::min(can_push, push_len);
+    // Fixed push budget (not scaled by speed): turn radius grows with speed,
+    // so being fast means being committed to your line.
+    let can_push = f32::min(accel * time.delta_secs(), push_len);
     let mut new_h = old_h + can_push * *push_dir;
 
     // Carve gain: coherent smooth carves (wishdir aligned with your arc) pay

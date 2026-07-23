@@ -198,7 +198,10 @@ pub struct CharacterController {
     pub air_friction: Friction,
     pub friction_hz: f32,
     pub acceleration_hz: f32,
-    pub air_acceleration_hz: f32,
+    /// Fixed air steering push in m/s². Turn radius grows with speed
+    /// (turn rate = air_control / speed), reversal from run speed takes
+    /// `speed / air_control` seconds.
+    pub air_control: f32,
     pub water_acceleration_hz: f32,
     pub water_slowdown: f32,
     pub gravity: f32,
@@ -207,7 +210,6 @@ pub struct CharacterController {
     pub crane_height: f32,
     pub crouch_speed_scale: f32,
     pub speed: f32,
-    pub air_speed: f32,
     pub move_and_slide: MoveAndSlideConfig,
     pub max_speed: f32,
     pub jump_height: f32,
@@ -217,7 +219,6 @@ pub struct CharacterController {
     pub ledge_jump_power: f32,
     pub ledge_jump_factor: f32,
     pub max_tac_cos: f32,
-    pub max_air_wish_speed: f32,
     /// Speed multiplier per radian turned while airborne. 0 = pure momentum
     /// preservation, no gain from carving.
     pub carve_gain: f32,
@@ -287,7 +288,7 @@ impl Default for CharacterController {
             air_friction: Friction::default(),
             friction_hz: 12.0,
             acceleration_hz: 8.0,
-            air_acceleration_hz: 12.0,
+            air_control: 30.0,
             water_acceleration_hz: 12.0,
             water_slowdown: 0.6,
             gravity: 29.0,
@@ -295,7 +296,6 @@ impl Default for CharacterController {
             step_size: 0.7,
             crouch_speed_scale: 1.0 / 3.0,
             speed: 12.0,
-            air_speed: 1.5,
             move_and_slide: MoveAndSlideConfig {
                 skin_width: 0.015,
                 ..default()
@@ -308,7 +308,6 @@ impl Default for CharacterController {
             ledge_jump_factor: 0.8,
             tac_input_buffer: Duration::from_millis(150),
             max_tac_cos: 40.0_f32.to_radians().cos(),
-            max_air_wish_speed: 0.76,
             carve_gain: 0.25,
             max_carve_speed: 30.0,
             tac_cooldown: Duration::from_millis(300),
