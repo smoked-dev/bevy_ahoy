@@ -202,6 +202,9 @@ pub struct CharacterController {
     /// (turn rate = air_control / speed), reversal from run speed takes
     /// `speed / air_control` seconds.
     pub air_control: f32,
+    /// Strong steering push (m/s²) when wishdir is within ~30° of the current
+    /// velocity — mouse-led carves get this; keyboard yanks get `air_control`.
+    pub carve_control: f32,
     pub water_acceleration_hz: f32,
     pub water_slowdown: f32,
     pub gravity: f32,
@@ -289,6 +292,7 @@ impl Default for CharacterController {
             friction_hz: 12.0,
             acceleration_hz: 8.0,
             air_control: 30.0,
+            carve_control: 150.0,
             water_acceleration_hz: 12.0,
             water_slowdown: 0.6,
             gravity: 29.0,

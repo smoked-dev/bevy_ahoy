@@ -529,6 +529,19 @@ fn air_accelerate(wish_velocity: Vec3, accel: f32, time: &Time, ctx: &mut CtxIte
     };
     let old_h = ctx.velocity.0.with_y(0.0);
     let old_speed = old_h.length();
+    let align = if old_speed > 1e-3 {
+        wish_dir.dot(old_h / old_speed).max(0.0)
+    } else {
+        0.0
+    };
+
+    // Carve cone: steering within ~30° of your arc blends up to the strong
+    // carve budget, so mouse-led glides track the look direction losslessly.
+    // Outside the cone (keyboard yanks, reversals) only the base push applies.
+    const COS_CONE: f32 = 0.866; // cos 30°
+    let t = ((align - COS_CONE) / (1.0 - COS_CONE)).clamp(0.0, 1.0);
+    let t = t * t * (3.0 - 2.0 * t);
+    let accel = accel + (ctx.cfg.carve_control - accel) * t;
 
     // Doom-style chord geometry: above wish_speed, the target sits on the
     // circle of current speed in the input direction. Gentle turns complete
@@ -553,8 +566,7 @@ fn air_accelerate(wish_velocity: Vec3, accel: f32, time: &Time, ctx: &mut CtxIte
     // which let keyboard-circling collect gain with no cost (tornado).
     if old_speed + 1e-2 >= wish_speed && old_speed < ctx.cfg.max_carve_speed {
         let turn = old_h.angle_between(new_h);
-        let coherence = wish_dir.dot(old_h / old_speed).max(0.0);
-        new_h *= 1.0 + ctx.cfg.carve_gain * turn * coherence;
+        new_h *= 1.0 + ctx.cfg.carve_gain * turn * align;
     }
     ctx.velocity.0 = new_h.with_y(ctx.velocity.y);
 }
