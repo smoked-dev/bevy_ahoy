@@ -886,7 +886,7 @@ fn update_crane_state(
 
     ctx.input.craned = None;
     // Ensure we don't immediately jump on the surface if crane and jump are bound to the same key
-    ctx.input.jumped = None;
+    ctx.input.jump_held = false;
     ctx.input.mantled = None;
     ctx.input.tac = None;
 
@@ -1056,7 +1056,7 @@ fn update_mantle_state(
     ctx.input.craned = None;
     ctx.input.mantled = None;
     // Ensure we don't immediately jump on the surface if mantle and jump are bound to the same key
-    ctx.input.jumped = None;
+    ctx.input.jump_held = false;
 
     ctx.state.mantle = Some(mantle_state);
     ctx.output.mantle = Some(mantle_output);
@@ -1227,7 +1227,7 @@ fn handle_climbdown(
 
     ctx.input.craned = None;
     ctx.input.mantled = None;
-    ctx.input.jumped = None;
+    ctx.input.jump_held = false;
     ctx.input.climbdown = None;
 
     ctx.state.mantle = Some(mantle_state);
@@ -1627,7 +1627,7 @@ fn handle_ledge_jump_dir(ctx: &mut CtxItem) -> Option<Vec3> {
             .mantled
             .as_ref()
             .is_some_and(|m| m.elapsed() < ctx.cfg.mantle_input_buffer)
-        || ctx.input.jumped.is_none()
+        || !ctx.input.jump_held
     {
         return None;
     }
@@ -1663,10 +1663,7 @@ fn handle_jump(
                 return;
             }
         } else {
-            let Some(jump_time) = ctx.input.jumped.clone() else {
-                return;
-            };
-            if jump_time.elapsed() > ctx.cfg.jump_input_buffer {
+            if !ctx.input.jump_held {
                 return;
             }
             set_grounded(None, colliders, time, ctx, transform);
@@ -1689,7 +1686,7 @@ fn handle_jump(
     ctx.state.last_tac.reset();
     ctx.state.last_jump.reset();
 
-    ctx.input.jumped = None;
+    ctx.input.jump_held = false;
     ctx.input.tac = None;
 
     // TODO: read ground's jump factor

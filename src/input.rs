@@ -106,8 +106,10 @@ pub struct ThrowObject;
 pub struct AccumulatedInput {
     // The last non-zero move that was input since the last fixed update loop
     pub last_movement: Option<Vec2>,
-    // Time since the last jump input. Will be `None` once the jump was processed.
-    pub jumped: Option<Stopwatch>,
+    // Whether any frame since the last fixed update loop held jump. Held, not
+    // edge: jump fires iff this is true at the landing tick (autohop), and
+    // releasing before landing means no jump — there is no press buffer.
+    pub jump_held: bool,
     // Whether any frame since the last fixed update loop input a swim up
     pub swim_up: bool,
     // Time since the last tac input. Will be `None` once the tac was processed.
@@ -146,7 +148,7 @@ fn apply_global_movement(
 
 fn apply_jump(jump: On<Fire<Jump>>, mut accumulated_inputs: Query<&mut AccumulatedInput>) {
     if let Ok(mut accumulated_inputs) = accumulated_inputs.get_mut(jump.context) {
-        accumulated_inputs.jumped = Some(Stopwatch::new());
+        accumulated_inputs.jump_held = true;
     }
 }
 
@@ -250,7 +252,7 @@ fn clear_accumulated_input(mut accumulated_inputs: Query<&mut AccumulatedInput>)
     for mut accumulated_input in &mut accumulated_inputs {
         *accumulated_input = AccumulatedInput {
             last_movement: default(),
-            jumped: accumulated_input.jumped.clone(),
+            jump_held: default(),
             swim_up: default(),
             tac: accumulated_input.tac.clone(),
             bounced: accumulated_input.bounced.clone(),
@@ -264,9 +266,6 @@ fn clear_accumulated_input(mut accumulated_inputs: Query<&mut AccumulatedInput>)
 
 fn tick_timers(mut inputs: Query<&mut AccumulatedInput>, time: Res<Time>) {
     for mut input in inputs.iter_mut() {
-        if let Some(jumped) = input.jumped.as_mut() {
-            jumped.tick(time.delta());
-        }
         if let Some(tac) = input.tac.as_mut() {
             tac.tick(time.delta());
         }
